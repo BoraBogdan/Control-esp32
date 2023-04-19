@@ -1,0 +1,204 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  min-height: 100vh;
+  background: linear-gradient(0deg, #4b56d2 0%, #82c3ec 100%);
+  display: flex;
+  font-family: sans-serif;
+}
+
+.container {
+  margin: auto;
+  width: 500px;
+  height: 320px;
+  max-width: 90%;
+  margin-top: 30.5%;
+}
+
+.container form {
+  width: 100%;
+  height: 100%;
+  padding: 20px;
+  background: white;
+  border-radius: 4px;
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3);
+}
+
+.container form h1 {
+  text-align: cetner;
+  margin-bottom: 24px;
+  color: #222;
+}
+
+.container form .form-control {
+  width: 100%;
+  height: 40px;
+  background: white;
+  border-radius: 4px;
+  border: 1px solid silver;
+  margin: 10px 0 18px 0;
+  padding: 0 10px;
+}
+
+.container form .button-connect {
+  justify-content: center;
+  width: 108px;
+  height: 34px;
+  border: none;
+  outline: none;
+  background: #27a327;
+  cursor: pointer;
+  font-size: 16px;
+  text-transform: uppercase;
+  color: white;
+  border-radius: 4px;
+  transition: 0.3s;
+  margin-top: 1%;
+}
+
+.container-wps {
+  display: none;
+  margin: auto;
+  width: 600px;
+  height: 320px;
+  max-width: 90%;
+  margin-top: 30.5%;
+}
+
+.container-wps form h2 {
+  text-align: cetner;
+  margin-bottom: 24px;
+  color: #222;
+}
+
+.container-wps form {
+  width: 100%;
+  height: 100%;
+  padding: 20px;
+  background: white;
+  border-radius: 4px;
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3);
+}
+
+.container-wps form .button-connect-wps {
+  width: 150px;
+  height: 34px;
+  border: none;
+  outline: none;
+  background: #27a327;
+  cursor: pointer;
+  font-size: 16px;
+  text-transform: uppercase;
+  color: white;
+  border-radius: 4px;
+  transition: 0.3s;
+  margin-top: 12%;
+  margin-left: 35%;
+}
+
+.container form .button-connect:hover {
+  opacity: 0.7;
+}
+
+.container-wps form .button-connect-wps:hover {
+  opacity: 0.7;
+}
+
+.container-wps form p {
+  font-size: 18px;
+  text-decoration: underline;
+  margin-bottom: 30px;
+}
+
+.container-wps form ol {
+  margin-left: 30px;
+  line-height: 30px;
+}
+
+.main-container {
+  margin: auto;
+  width: 700px;
+  height: 700px;
+}
+
+.switch-group {
+  left: 69%;
+  top: 30%;
+  width: 80px;
+  height: 20px;
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+}
+
+.switch-group .label-wps {
+  font-weight: bold;
+}
+
+/*
+*   COD PENTRU SWITCH
+*/
+
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 34px;
+  height: 20px;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: #ccc;
+  -webkit-transition: 0.4s;
+  transition: 0.4s;
+}
+
+.slider:before {
+  position: absolute;
+  content: "";
+  height: 16px;
+  width: 16px;
+  left: 2px;
+  bottom: 2px;
+  background-color: white;
+  -webkit-transition: 0.4s;
+  transition: 0.4s;
+}
+
+input:checked + .slider {
+  background-color: #472183;
+}
+
+input:focus + .slider {
+  box-shadow: 0 0 1px #472183;
+}
+
+input:checked + .slider:before {
+  -webkit-transform: translateX(14px);
+  -ms-transform: translateX(14px);
+  transform: translateX(14px);
+}
+
+/* Rounded sliders */
+.slider.round {
+  border-radius: 34px;
+}
+
+.slider.round:before {
+  border-radius: 50%;
+}

@@ -1,0 +1,79 @@
+<html lang="en">
+  <head>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        min-height: 100vh;
+        background: linear-gradient(0deg, #4b56d2 0%, #82c3ec 100%);
+        display: flex;
+        font-family: sans-serif;
+      }
+
+      .main-container {
+        margin: auto;
+        width: 700px;
+        height: 700px;
+      }
+
+      .container {
+        margin: auto;
+        width: 500px;
+        height: 320px;
+        max-width: 90%;
+        margin-top: 30.5%;
+        background: white;
+        border-radius: 4px;
+        box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3);
+      }
+
+      .container h2 {
+        text-align: center;
+        padding-top: 25%;
+        color: #222;
+      }
+
+      .container h3 {
+        text-align: center;
+        padding-top: 20%;
+        color: #222;
+      }
+    </style>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Conectare re&#355;ea</title>
+    <script>
+      window.onload = function () {
+        var seconds = 5;
+        var countdown = setInterval(function () {
+          document.getElementById("countdown").innerHTML = seconds;
+          seconds--;
+          if (seconds < 0) {
+            clearInterval(countdown);
+            window.location = "/";
+          }
+        }, 1000);
+      };
+    </script>
+  </head>
+  <body>
+    <div class="main-container">
+      <div class="container">
+        <h2>
+          Conectarea la re&#355;ea
+          <p style="color: red">nu s-a putut realiza</p>
+        </h2>
+        <h3>
+          <p>
+            Redirec&#355;ionare &#238;n <span id="countdown">5</span> secunde...
+          </p>
+        </h3>
+      </div>
+    </div>
+  </body>
+</html>
