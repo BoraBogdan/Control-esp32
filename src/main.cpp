@@ -27,6 +27,7 @@ Preferences preferences;
 HTTPClient http;
 const unsigned long postInterval = 10000; //Period to wait until sending post request in millis
 unsigned long lastPostTime = 0;
+const uint8_t soilHumidityPin = 34;
 
 void wpsInitConfig(){
   config.wps_type = ESP_WPS_MODE;
@@ -176,8 +177,17 @@ void waitingForConnectionFromWPS()
   server.send(200, "text/html", createFile("waiting-connection-wps.html"));
 }
 
-void makePostRequestSendDhtData(float airHumidity, float temperature) 
+void makePostRequestSendDhtData() 
 {
+  float temperature = dht.readTemperature();
+  float airHumidity = dht.readHumidity(); 
+
+  if (isnan(temperature) || isnan(airHumidity))
+  {
+    Serial.println("Failed to read data form sensor");  
+    return;
+  } 
+
   if (WiFi.status() == WL_CONNECTED)
   {      
     http.begin("http://192.168.1.7:8080/dht/addData");
@@ -186,7 +196,40 @@ void makePostRequestSendDhtData(float airHumidity, float temperature)
     StaticJsonDocument<200> doc;    
     doc["airHumidity"] = airHumidity;
     doc["temperature"] = temperature;    
+    doc["microcontrollerID"] = 1;
+    String jsonStr;
+    serializeJson(doc, jsonStr);    
     
+    int httpResponseCode = http.POST(jsonStr);   
+
+    if (httpResponseCode > 0)
+    {      
+      String response = http.getString();
+      Serial.println("\nStatus code: " + String(httpResponseCode));
+      Serial.println(response);        
+      Serial.println();
+    } else
+    {
+      Serial.println("Error on HTTP request");
+      Serial.println("\nStatus code: " + String(httpResponseCode) + "\n");
+    }
+    http.end();     
+  } 
+}
+
+void makePostRequestSendSoiltData() 
+{
+
+  ushort soilHumidity = analogRead(soilHumidityPin);
+
+  if (WiFi.status() == WL_CONNECTED)
+  {      
+    http.begin("http://192.168.1.7:8080/soil/addSoilData");
+    http.addHeader("Content-Type", "application/json");    
+
+    StaticJsonDocument<200> doc;    
+    doc["soilHumidity"] = soilHumidity; 
+    doc["microcontrollerID"] = 1;
     String jsonStr;
     serializeJson(doc, jsonStr);    
     
@@ -238,20 +281,13 @@ void setup()
 void loop()
 {
   server.handleClient();
-  
-  float temperature = dht.readTemperature();
-  float airHumidity = dht.readHumidity();
-
-  if (isnan(temperature) || isnan(airHumidity))
-  {
-    Serial.println("Failed to read data form sensor");  
-    return;
-  }   
-
   unsigned long currentTime = millis();
   if (currentTime - lastPostTime >= postInterval)
-  {    
-    makePostRequestSendDhtData(airHumidity, temperature);
+  {   
+    makePostRequestSendDhtData();
+    delay(10);
+    makePostRequestSendSoiltData();
+
     lastPostTime = currentTime;
   }
 }
