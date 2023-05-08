@@ -7,6 +7,7 @@
 #include <DHT_U.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <Ticker.h>
 
 #define ESP_WPS_MODE      WPS_TYPE_PBC
 #define ESP_MANUFACTURER  "ESPRESSIF"
@@ -28,6 +29,10 @@ HTTPClient http;
 const unsigned long postInterval = 10000; //Period to wait until sending post request in millis
 unsigned long lastPostTime = 0;
 const uint8_t soilHumidityPin = 34;
+const uint8_t resetButtonPin = 23;
+const uint8_t buttonPin = 22;
+Ticker jsonUpdater;
+StaticJsonDocument<200> networkStatusDoc;
 
 void wpsInitConfig(){
   config.wps_type = ESP_WPS_MODE;
@@ -51,7 +56,8 @@ void wpsStop(){
     }
 }
 
-String wpspin2string(uint8_t a[]){
+String wpspin2string(uint8_t a[])
+{
   char wps_pin[9];
   for(int i=0;i<8;i++){
     wps_pin[i] = a[i];
@@ -93,7 +99,8 @@ void sendPage()
   }
 }
 
-void WiFiEvent(WiFiEvent_t event, arduino_event_info_t info){   
+void WiFiEvent(WiFiEvent_t event, arduino_event_info_t info)
+{   
   switch(event){
     case ARDUINO_EVENT_WIFI_STA_START:
       Serial.println("Station Mode Started");
@@ -109,6 +116,10 @@ void WiFiEvent(WiFiEvent_t event, arduino_event_info_t info){
       break;
     case ARDUINO_EVENT_WPS_ER_SUCCESS:
       Serial.println("WPS Successfull, stopping WPS and connecting to: " + String(WiFi.SSID()));      
+      preferences.begin("Credentials",false);
+      preferences.putString("SSID", WiFi.SSID());
+      preferences.putString("Password", WiFi.psk());
+      preferences.end();
       wpsStop();
       delay(10);
       WiFi.begin();              
@@ -133,6 +144,17 @@ void WiFiEvent(WiFiEvent_t event, arduino_event_info_t info){
   }
 }
 
+void printDotsWhileWaitingToConnect ()
+{
+  int cycles = 0;
+  while (WiFi.status() != WL_CONNECTED && cycles < 10)
+  {
+    delay(500);
+    Serial.print(".");
+    cycles++;
+  }
+}
+
 void onConnect()
 {
   String ssid = server.arg("ssid");
@@ -145,20 +167,22 @@ void onConnect()
   
   WiFi.begin(ssid.c_str(), password.c_str());
 
-  int cycles = 0;
-  while (WiFi.status() != WL_CONNECTED && cycles < 10)
-  {
-    delay(500);
-    Serial.print(".");
-    cycles++;
-  }
+  printDotsWhileWaitingToConnect();
+
+  // int cycles = 0;
+  // while (WiFi.status() != WL_CONNECTED && cycles < 10)
+  // {
+  //   delay(500);
+  //   Serial.print(".");
+  //   cycles++;
+  // }
 
   sendPage();
 
   // clear preferences
-  preferences.begin("Credentials", false);
-  preferences.clear();
-  preferences.end();
+  // preferences.begin("Credentials", false);
+  // preferences.clear();
+  // preferences.end();
 }
 
 void onConnectWPS()
@@ -190,7 +214,7 @@ void makePostRequestSendDhtData()
 
   if (WiFi.status() == WL_CONNECTED)
   {      
-    http.begin("http://192.168.1.7:8080/dht/addData");
+    http.begin("http://192.168.0.101:8080/dht/addData");
     http.addHeader("Content-Type", "application/json");    
 
     StaticJsonDocument<200> doc;    
@@ -219,12 +243,11 @@ void makePostRequestSendDhtData()
 
 void makePostRequestSendSoiltData() 
 {
-
   ushort soilHumidity = analogRead(soilHumidityPin);
 
   if (WiFi.status() == WL_CONNECTED)
   {      
-    http.begin("http://192.168.1.7:8080/soil/addSoilData");
+    http.begin("http://192.168.0.101:8080/soil/addSoilData");
     http.addHeader("Content-Type", "application/json");    
 
     StaticJsonDocument<200> doc;    
@@ -250,32 +273,83 @@ void makePostRequestSendSoiltData()
   } 
 }
 
+void updateConnectedStatus() 
+{
+  networkStatusDoc["status"] = (WiFi.status() == WL_CONNECTED) ? "connected" : "disconnected";
+}
+
+void sendConnectedStatus() 
+{   
+  String json;
+  updateConnectedStatus();
+  serializeJson(networkStatusDoc, json);    
+  server.send(200, "application/json", json);
+}
+
+
+void resetNetworkCredentials() 
+{
+  if (digitalRead(resetButtonPin) == LOW)
+  {
+    digitalWrite(buttonPin, HIGH);
+    preferences.begin("Credentials", false);
+    preferences.clear();
+    preferences.end();
+  } else 
+  {
+    digitalWrite(buttonPin, LOW);
+  }
+}
+
 void setup()
 {
   Serial.begin(921600);  
   dht.begin();
+  pinMode(resetButtonPin, INPUT);
+  pinMode(buttonPin, OUTPUT);
   WiFi.mode(WIFI_AP_STA);
   WiFi.disconnect();
   WiFi.setAutoConnect(false);
   WiFi.setAutoReconnect(false);
   WiFi.softAP("MyESP32AP", "password");  
-  Serial.println("\n\n" + WiFi.softAPIP().toString());
+  Serial.println("\n\n" + WiFi.softAPIP().toString());  
+
+  preferences.begin("Credentials", false);
+  String ssid = preferences.getString("SSID", "");
+  String password = preferences.getString("Password", "");
+  if ( ssid == "" || password == "") 
+  {
+    Serial.println("No WiFi credentials");
+  } else 
+  {
+    Serial.println("Connecting to WiFi...");
+    WiFi.begin(ssid.c_str(), password.c_str());
+    printDotsWhileWaitingToConnect();
+    server.on("/", sendPage);
+    preferences.end();
+  }
 
   if(!SPIFFS.begin(true)){
     Serial.println("An Error has occurred while mounting SPIFFS");
     return;
   }
-
+  
   server.on("/", []()
-            { server.send(200, "text/html", createFile("home.html")); });
-  server.on("/styles.css", []()
-            { server.send(200, "text/css", createFile("styles.css")); });     
+            { server.send(200, "text/html", createFile("check-saved-network.html")); });
+  server.on("/jquery-3.6.4.js", []()
+            { server.send(200, "text/javascript", createFile("jquery-3.6.4.js")); });
+  server.on("/network-status", sendConnectedStatus);
+  // server.on("/", []()
+  //           { server.send(200, "text/html", createFile("home.html")); });
+  // server.on("/styles.css", []()
+  //           { server.send(200, "text/css", createFile("styles.css")); });     
   server.on("/connect", onConnect);   
   server.on("/connect-wps", waitingForConnectionFromWPS);
   server.onNotFound([]() { server.send(404, "text/html", createFile("connected-failed.html")); } ); 
 
   Serial.println("Web server started!"); 
-  server.begin();    
+  server.begin();   
+  jsonUpdater.attach(1, updateConnectedStatus); 
 }
 
 void loop()
@@ -290,4 +364,6 @@ void loop()
 
     lastPostTime = currentTime;
   }
+  
+  resetNetworkCredentials();
 }
