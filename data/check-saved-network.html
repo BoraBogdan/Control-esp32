@@ -54,19 +54,22 @@
     </div>
 
     <script>
-      function getStatus() {
-        $.ajax({
-          url: "/network-status",
-          method: "GET",
-          success: function (response) {
-            $("#result").html(response.status);
-          },
-          error: function (jqXHR, textStatus, errorThrown) {
-            console.error("Error fetching JSON data:", errorThrown);
-          },
-        });
-      }
-      setInterval(getStatus, 1000);
+      var ws = new WebSocket("ws://" + window.location.host + "/ws");
+      ws.onmessage = function (event) {
+        var data = JSON.parse(event.data);
+        console.log("Received message: ", data);
+        if (data.status == "connected") {
+          console.log("Should redirect to /success");
+          window.location.replace("/connected-succesfully");
+        } else {
+          console.log("Should change status");
+          $("#status").text(data.status);
+        }
+        if (data.expired == "expired") {
+          console.log("Should redirect to /home");
+          window.location.replace("/home");
+        }
+      };
     </script>
   </body>
 </html>

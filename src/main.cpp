@@ -1,5 +1,6 @@
 #include <WiFi.h>
 #include <WebServer.h>
+#include <ESPAsyncWebServer.h>
 #include <Preferences.h>
 #include <SPIFFS.h>
 #include <esp_wps.h>
@@ -23,7 +24,9 @@
 
 DHT dht(DHTPIN, DHTTYPE);
 static esp_wps_config_t config;
-WebServer server(80);
+// WebServer server(80);
+AsyncWebServer server(80);
+AsyncWebSocket ws("/ws");
 Preferences preferences;
 HTTPClient http;
 const unsigned long postInterval = 10000; //Period to wait until sending post request in millis
@@ -31,8 +34,10 @@ unsigned long lastPostTime = 0;
 const uint8_t soilHumidityPin = 34;
 const uint8_t resetButtonPin = 23;
 const uint8_t buttonPin = 22;
-Ticker jsonUpdater;
+Ticker ticker;
 StaticJsonDocument<200> networkStatusDoc;
+bool timeExpired = false;
+
 
 void wpsInitConfig(){
   config.wps_type = ESP_WPS_MODE;
@@ -80,24 +85,24 @@ String createFile(String nameAndExtensionOfFile)
   return html;
 }
 
-void sendPage() 
-{
-  if (WiFi.status() == WL_CONNECTED)
-  {    
-    Serial.println("\nWiFi connected");
-    Serial.println("IP address: ");
-    Serial.println("local IP: " + WiFi.localIP().toString() + "\n");
+// void sendPage() 
+// {
+//   if (WiFi.status() == WL_CONNECTED)
+//   {    
+//     Serial.println("\nWiFi connected");
+//     Serial.println("IP address: ");
+//     Serial.println("local IP: " + WiFi.localIP().toString() + "\n");
 
-    server.send(200, "text/html", createFile("connected-successfully.html"));
-  }
-  else
-  {
-    Serial.println("");
-    Serial.println("WiFi connection failed");
+//     server.send(200, "text/html", createFile("connected-successfully.html"));
+//   }
+//   else
+//   {
+//     Serial.println("");
+//     Serial.println("WiFi connection failed");
 
-    server.send(404, "text/html", createFile("connected-failed.html"));
-  }
-}
+//     server.send(404, "text/html", createFile("connected-failed.html"));
+//   }
+// }
 
 void WiFiEvent(WiFiEvent_t event, arduino_event_info_t info)
 {   
@@ -123,8 +128,8 @@ void WiFiEvent(WiFiEvent_t event, arduino_event_info_t info)
       wpsStop();
       delay(10);
       WiFi.begin();              
-      server.on("/connect-wps-result", []() 
-                { server.send(200, "text/html", createFile("connected-successfully.html")); } );              
+      // server.on("/connect-wps-result", []() 
+      //           { server.send(200, "text/html", createFile("connected-successfully.html")); } );              
       break;
     case ARDUINO_EVENT_WPS_ER_FAILED:
       Serial.println("WPS Failed, retrying");         
@@ -148,42 +153,42 @@ void printDotsWhileWaitingToConnect ()
 {
   int cycles = 0;
   while (WiFi.status() != WL_CONNECTED && cycles < 10)
-  {
-    delay(500);
+  {    
     Serial.print(".");
-    cycles++;
+    cycles++;    
   }
+  timeExpired = true;
 }
 
-void onConnect()
-{
-  String ssid = server.arg("ssid");
-  String password = server.arg("password");
+// void onConnect()
+// {
+//   // String ssid = server.arg("ssid");
+//   // String password = server.arg("password");
 
-  preferences.begin("Credentials", false);
-  preferences.putString("ssid", ssid);
-  preferences.putString("password", password);
-  preferences.end();     
+//   preferences.begin("Credentials", false);
+//   preferences.putString("ssid", ssid);
+//   preferences.putString("password", password);
+//   preferences.end();     
   
-  WiFi.begin(ssid.c_str(), password.c_str());
+//   WiFi.begin(ssid.c_str(), password.c_str());
 
-  printDotsWhileWaitingToConnect();
+//   printDotsWhileWaitingToConnect();
 
-  // int cycles = 0;
-  // while (WiFi.status() != WL_CONNECTED && cycles < 10)
-  // {
-  //   delay(500);
-  //   Serial.print(".");
-  //   cycles++;
-  // }
+//   // int cycles = 0;
+//   // while (WiFi.status() != WL_CONNECTED && cycles < 10)
+//   // {
+//   //   delay(500);
+//   //   Serial.print(".");
+//   //   cycles++;
+//   // }
 
-  sendPage();
+//   sendPage();
 
-  // clear preferences
-  // preferences.begin("Credentials", false);
-  // preferences.clear();
-  // preferences.end();
-}
+//   // clear preferences
+//   // preferences.begin("Credentials", false);
+//   // preferences.clear();
+//   // preferences.end();
+// }
 
 void onConnectWPS()
 {
@@ -198,7 +203,7 @@ void onConnectWPS()
 void waitingForConnectionFromWPS() 
 {
   onConnectWPS();
-  server.send(200, "text/html", createFile("waiting-connection-wps.html"));
+  // server.send(200, "text/html", createFile("waiting-connection-wps.html"));
 }
 
 void makePostRequestSendDhtData() 
@@ -273,19 +278,17 @@ void makePostRequestSendSoiltData()
   } 
 }
 
-void updateConnectedStatus() 
-{
-  networkStatusDoc["status"] = (WiFi.status() == WL_CONNECTED) ? "connected" : "disconnected";
-}
-
 void sendConnectedStatus() 
 {   
-  String json;
-  updateConnectedStatus();
-  serializeJson(networkStatusDoc, json);    
-  server.send(200, "application/json", json);
+  if (ws.count() > 0)
+  {
+    String json;
+    networkStatusDoc["status"] = (WiFi.status() == WL_CONNECTED) ? "connected" : "disconnected";
+    networkStatusDoc["expired"] = timeExpired ? "expired" : "valid";
+    serializeJson(networkStatusDoc, json);      
+    ws.textAll(json);  
+  }  
 }
-
 
 void resetNetworkCredentials() 
 {
@@ -303,15 +306,19 @@ void resetNetworkCredentials()
 
 void setup()
 {
-  Serial.begin(921600);  
+  Serial.begin(921600); 
+
   dht.begin();
+
   pinMode(resetButtonPin, INPUT);
   pinMode(buttonPin, OUTPUT);
+
   WiFi.mode(WIFI_AP_STA);
   WiFi.disconnect();
   WiFi.setAutoConnect(false);
   WiFi.setAutoReconnect(false);
   WiFi.softAP("MyESP32AP", "password");  
+
   Serial.println("\n\n" + WiFi.softAPIP().toString());  
 
   preferences.begin("Credentials", false);
@@ -320,41 +327,62 @@ void setup()
   if ( ssid == "" || password == "") 
   {
     Serial.println("No WiFi credentials");
+    timeExpired = true;
   } else 
   {
     Serial.println("Connecting to WiFi...");
-    WiFi.begin(ssid.c_str(), password.c_str());
+    WiFi.begin(ssid.c_str(), password.c_str());    
     printDotsWhileWaitingToConnect();
-    server.on("/", sendPage);
-    preferences.end();
   }
+  preferences.end();
 
   if(!SPIFFS.begin(true)){
     Serial.println("An Error has occurred while mounting SPIFFS");
     return;
   }
   
-  server.on("/", []()
-            { server.send(200, "text/html", createFile("check-saved-network.html")); });
-  server.on("/jquery-3.6.4.js", []()
-            { server.send(200, "text/javascript", createFile("jquery-3.6.4.js")); });
-  server.on("/network-status", sendConnectedStatus);
+  // server.on("/", []()
+  //           { server.send(200, "text/html", createFile("check-saved-network.html")); });
+  // server.on("/jquery-3.6.4.js", []()
+  //           { server.send(200, "text/javascript", createFile("jquery-3.6.4.js")); });
+  // server.on("/network-status", sendConnectedStatus);
   // server.on("/", []()
   //           { server.send(200, "text/html", createFile("home.html")); });
   // server.on("/styles.css", []()
   //           { server.send(200, "text/css", createFile("styles.css")); });     
-  server.on("/connect", onConnect);   
-  server.on("/connect-wps", waitingForConnectionFromWPS);
-  server.onNotFound([]() { server.send(404, "text/html", createFile("connected-failed.html")); } ); 
+  // server.on("/connect", onConnect);   
+  // server.on("/connect-wps", waitingForConnectionFromWPS);
+  // server.onNotFound([]() { server.send(404, "text/html", createFile("connected-failed.html")); } ); 
 
-  Serial.println("Web server started!"); 
-  server.begin();   
-  jsonUpdater.attach(1, updateConnectedStatus); 
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send(SPIFFS, "/check-saved-network.html", "text/html");
+  });
+
+  server.on("/jquery-3.6.4.js", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send(SPIFFS, "/jquery-3.6.4.js", "text/javascript");
+  });
+
+  server.on("/home", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send(SPIFFS, "/home.html", "text/html");
+  });
+
+  server.on("/styles.css", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send(SPIFFS, "/styles.css", "text/css");
+  });  
+
+  server.on("/connected-succesfully", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send(SPIFFS, "/connected-succesfully.html", "text/html");
+  });    
+
+  Serial.println("Web server started!");   
+  server.addHandler(&ws);
+  server.begin();      
+  ticker.attach(5, sendConnectedStatus);    
 }
 
 void loop()
 {
-  server.handleClient();
+  // server.handleClient();  
   unsigned long currentTime = millis();
   if (currentTime - lastPostTime >= postInterval)
   {   
@@ -363,7 +391,7 @@ void loop()
     makePostRequestSendSoiltData();
 
     lastPostTime = currentTime;
-  }
-  
+  } 
+
   resetNetworkCredentials();
 }
