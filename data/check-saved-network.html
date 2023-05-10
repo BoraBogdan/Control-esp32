@@ -48,7 +48,7 @@
       <div class="container">
         <h2>
           Se verific&#259; re&#355;elele salvate <br />
-          <span id="status">Unkown..</span>
+          <span id="status">...</span>
         </h2>
       </div>
     </div>
@@ -57,14 +57,16 @@
       var ws = new WebSocket("ws://" + window.location.host + "/ws");
       ws.onmessage = function (event) {
         var data = JSON.parse(event.data);
+
         console.log("Received message: ", data);
-        if (data.status == "connected") {
+        console.log("Should change status");
+        $("#status").text(data.status);
+
+        if (data.status == "conectat") {
           console.log("Should redirect to /success");
-          window.location.replace("/connected-succesfully");
-        } else {
-          console.log("Should change status");
-          $("#status").text(data.status);
+          window.location.replace("/success");
         }
+
         if (data.expired == "expired") {
           console.log("Should redirect to /home");
           window.location.replace("/home");
