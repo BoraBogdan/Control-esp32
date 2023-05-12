@@ -11,6 +11,7 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <Ticker.h>
+#include <AsyncDelay.h>
 
 #define ESP_WPS_MODE      WPS_TYPE_PBC
 #define ESP_MANUFACTURER  "ESPRESSIF"
@@ -20,6 +21,7 @@
 #define DHTTYPE DHT11
 #define DHTPIN 33
 
+AsyncDelay asyncDelay;
 DHT dht(DHTPIN, DHTTYPE);
 static esp_wps_config_t config;
 AsyncWebServer server(80);
@@ -29,15 +31,19 @@ HTTPClient http;
 Ticker ticker;
 StaticJsonDocument<200> networkStatusDoc;
 
-const unsigned long postInterval = 10000; //Period waited until sending post request in millis
-unsigned long lastPostTime = 0;           // Don't change
+
+const unsigned int postInterval = 10000;               //Period waited until sending post request in millis
+const unsigned int connectionInterval = 5000;          //Period waited for a stable connection until sending a response
+const unsigned int delayCheckConn = 5000;              //After Xms is going to check wifi conn before redirecting
+bool connectionChecked = false;
 const uint8_t soilHumidityPin = 34;
 const uint8_t resetButtonPin = 23;
 const uint8_t ledPin = 22;
 bool timeExpired = false;
 
 //*start wps methods
-void wpsInitConfig(){
+void wpsInitConfig()
+{
   config.wps_type = ESP_WPS_MODE;
   strcpy(config.factory_info.manufacturer, ESP_MANUFACTURER);
   strcpy(config.factory_info.model_number, ESP_MODEL_NUMBER);
@@ -45,16 +51,21 @@ void wpsInitConfig(){
   strcpy(config.factory_info.device_name, ESP_DEVICE_NAME);
 }
 
-void wpsStart(){
-    if(esp_wifi_wps_enable(&config)){
+void wpsStart()
+{
+    if(esp_wifi_wps_enable(&config))
+    {
     	Serial.println("WPS Enable Failed");
-    } else if(esp_wifi_wps_start(0)){
+    } else if(esp_wifi_wps_start(0))
+    {
     	Serial.println("WPS Start Failed");
     }
 }
 
-void wpsStop(){
-    if(esp_wifi_wps_disable()){
+void wpsStop()
+{
+    if(esp_wifi_wps_disable())
+    {
     	Serial.println("WPS Disable Failed");
     }
 }
@@ -62,7 +73,8 @@ void wpsStop(){
 String wpspin2string(uint8_t a[])
 {
   char wps_pin[9];
-  for(int i=0;i<8;i++){
+  for(int i=0;i<8;i++)
+  {
     wps_pin[i] = a[i];
   }
   wps_pin[8] = '\0';
@@ -71,19 +83,23 @@ String wpspin2string(uint8_t a[])
 
 void WiFiEvent(WiFiEvent_t event, arduino_event_info_t info)
 {   
-  switch(event){
+  switch(event)
+  {
     case ARDUINO_EVENT_WIFI_STA_START:
       Serial.println("Station Mode Started");
       break;
+
     case ARDUINO_EVENT_WIFI_STA_GOT_IP:
       Serial.println("Connected to: " + String(WiFi.SSID()));
       Serial.print("Got IP: ");
       Serial.println(WiFi.localIP().toString());            
       break;
+
     case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
       Serial.println("Disconnected from station, attempting reconnection");
       WiFi.reconnect();
       break;
+
     case ARDUINO_EVENT_WPS_ER_SUCCESS:
       Serial.println("WPS Successfull, stopping WPS and connecting to: " + String(WiFi.SSID()));      
       preferences.begin("Credentials",false);
@@ -91,27 +107,66 @@ void WiFiEvent(WiFiEvent_t event, arduino_event_info_t info)
       preferences.putString("Password", WiFi.psk());
       preferences.end();
       wpsStop();
-      delay(10);
-      WiFi.begin();                           
+      delay(10);                              
       break;
+
     case ARDUINO_EVENT_WPS_ER_FAILED:
       Serial.println("WPS Failed, retrying");         
       wpsStop();
       wpsStart();                
       break;
+
     case ARDUINO_EVENT_WPS_ER_TIMEOUT:
       Serial.println("WPS Timedout, retrying");
       wpsStop();
       wpsStart();
       break;
+
     case ARDUINO_EVENT_WPS_ER_PIN:
       Serial.println("WPS_PIN = " + wpspin2string(info.wps_er_pin.pin_code));
       break;
+
     default:      
       break;
   }
 }
 //*end wps methods
+
+//* Starts WPS connection
+void startConnectionWPS()
+{  
+  Serial.println();
+  WiFi.onEvent(WiFiEvent);
+  Serial.println("Starting WPS");
+  wpsInitConfig();
+  wpsStart();       
+}
+
+//* if connection to WiFi is successfulf prints the ip
+void printIP() 
+{  
+  Serial.println("\nWiFi connected");
+  Serial.println("IP address: ");
+  Serial.println("local IP: " + WiFi.localIP().toString() + "\n");
+  
+}
+
+// TODO DOC
+void waitForStableConn()
+{
+  // bool verifications = asyncDelay.isExpired() && !connectionChecked;
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    printIP();
+    connectionChecked = true;
+    Serial.println("Conectat");
+  } else if (WiFi.status() != WL_CONNECTED)
+  {
+    timeExpired = true;
+    connectionChecked = true;
+    Serial.println("Deconectat");
+  }
+}
 
 //* setup server requests
 void setupServerRequests()
@@ -125,6 +180,8 @@ void setupServerRequests()
   });
 
   server.on("/home", HTTP_GET, [](AsyncWebServerRequest *request){
+    timeExpired = false;
+    wpsStop();
     request->send(SPIFFS, "/home.html", "text/html");
   });
 
@@ -135,6 +192,30 @@ void setupServerRequests()
   server.on("/success", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(SPIFFS, "/connected-successfully.html", "text/html");
   }); 
+
+  server.on("/fail", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send(SPIFFS, "/connected-failed.html", "text/html");
+  }); 
+
+  server.on("/connect", HTTP_GET, [](AsyncWebServerRequest *request){
+    String ssidFromClient = "";
+    String passwordFromClient = "";
+
+    if (request->hasParam("ssid") && request->hasParam("password")) 
+    {      
+      ssidFromClient = request->getParam("ssid")->value();
+      passwordFromClient = request->getParam("password")->value();
+      WiFi.begin(ssidFromClient.c_str(), passwordFromClient.c_str());    
+      request->send(SPIFFS, "/waiting-connection.html", "text/html");
+      waitForStableConn();
+    }    
+  });
+
+  server.on("/connect-wps", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send(SPIFFS, "/waiting-connection.html", "text/html");
+    startConnectionWPS();
+    waitForStableConn();
+  });
 }
 
 //* setup WiFi config
@@ -239,8 +320,7 @@ void resetNetworkCredentials()
     digitalWrite(ledPin, HIGH);
     preferences.begin("Credentials", false);
     preferences.clear();
-    preferences.end();
-    Serial.println(digitalRead(ledPin));
+    preferences.end();    
   } else 
   {
     digitalWrite(ledPin, LOW);    
@@ -260,27 +340,16 @@ void sendConnectedStatus()
   }  
 }
 
-//* if connection to WiFi is successfulf prints the ip
-void ifConnectionSuccessfulPrintIP() 
-{
-  if (WiFi.status() == WL_CONNECTED)
-  {
-    Serial.println("\nWiFi connected");
-    Serial.println("IP address: ");
-    Serial.println("local IP: " + WiFi.localIP().toString() + "\n");
-  }
-}
-
 /* 
 * checking for stable WiFi connection for 5s. If connection failes         -> sets "expired" tag from json to expired
 *                                             If connection is successful  -> prints ip from the network
 */
-void printDotsWhileWaitingToConnect ()
+void wifiConnUpdateJSON ()
 {
   int cycles = 0;
   while (WiFi.status() != WL_CONNECTED && cycles < 10)
-  {    
-    delay(500);
+  {   
+    delay(500);     
     Serial.print(".");
     cycles++;    
   }
@@ -291,15 +360,19 @@ void printDotsWhileWaitingToConnect ()
     timeExpired = true;
   }
 
-  ifConnectionSuccessfulPrintIP();
+  if (WiFi.status() == WL_CONNECTED)
+  {
+  printIP();
+  }
 }
 
 //* check for saved network credentials in preferences
-void checkPreferencesForNetworkCredentials()
+void checkPreferencesForCredentials()
 {
   preferences.begin("Credentials", false);
   String ssid = preferences.getString("SSID", "");  
   String password = preferences.getString("Password", "");
+  preferences.end();
   if ( ssid == "" || password == "") 
   {
     Serial.println("No WiFi credentials");
@@ -308,9 +381,9 @@ void checkPreferencesForNetworkCredentials()
   {
     Serial.println("Connecting to WiFi...");
     WiFi.begin(ssid.c_str(), password.c_str());    
-    printDotsWhileWaitingToConnect();
+    wifiConnUpdateJSON();
   }
-  preferences.end();
+  
 }
 
 
@@ -319,43 +392,28 @@ void setup()
   Serial.begin(921600); 
   dht.begin();
   pinMode(resetButtonPin, INPUT);
-  pinMode(ledPin, OUTPUT);  
+  pinMode(ledPin, OUTPUT); 
+  asyncDelay.start(delayCheckConn, AsyncDelay::MILLIS); 
   setupWiFi();
-  checkPreferencesForNetworkCredentials();
+  checkPreferencesForCredentials();
   mountSPIFFS();
   setupServerRequests();
   server.addHandler(&ws);
   Serial.println("Web server started!");   
-  server.begin();      
+  server.begin();   
   ticker.attach(5, sendConnectedStatus);    
 }
 
 void loop()
 {  
-  resetNetworkCredentials();
+  resetNetworkCredentials();  
+
+  unsigned long lastPostTime = 0;
   unsigned long currentTime = millis();
   if (currentTime - lastPostTime >= postInterval)
   {   
-    postRequestSendDhtData();
-    delay(10);
+    postRequestSendDhtData();    
     postRequestSendSoiltData();
-
     lastPostTime = currentTime;
   } 
-}
-
-// TODO verificat metodele pt conectare wps
-void onConnectWPS()
-{
-  delay(10);
-  Serial.println();
-  WiFi.onEvent(WiFiEvent);
-  Serial.println("Starting WPS");
-  wpsInitConfig();
-  wpsStart();       
-}
-
-void waitingForConnectionFromWPS() 
-{
-  onConnectWPS();  
 }

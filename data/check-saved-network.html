@@ -48,10 +48,28 @@
       <div class="container">
         <h2>
           Se verific&#259; re&#355;elele salvate <br />
-          <span id="status">...</span>
+          <span id="status"></span>
         </h2>
       </div>
     </div>
+
+    <script>
+      window.onload = function () {
+        var dotCount = 0;
+        var counter = 0;
+        var countdown = setInterval(function () {
+          var countdownEl = document.getElementById("status");
+          countdownEl.innerHTML += ".";
+          dotCount++;
+
+          if (dotCount >= 4) {
+            counter++;
+            countdownEl.innerHTML = "";
+            dotCount = 0;
+          }
+        }, 1000);
+      };
+    </script>
 
     <script>
       var ws = new WebSocket("ws://" + window.location.host + "/ws");
@@ -65,6 +83,7 @@
         if (data.status == "conectat") {
           console.log("Should redirect to /success");
           window.location.replace("/success");
+          return;
         }
 
         if (data.expired == "expired") {

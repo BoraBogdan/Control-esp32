@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Conectare re&#355;ea</title>
     <link rel="stylesheet" href="styles.css" />
+    <script src="jquery-3.6.4.js"></script>
   </head>
   <body>
     <div class="main-container">
@@ -16,7 +17,7 @@
         </label>
       </div>
       <div class="container" id="container">
-        <form action="/connect" method="post">
+        <form action="/connect">
           <h1>Conectare re&#355;ea</h1>
           <div class="form-group">
             <label for="ssid">Nume re&#355;ea</label>
@@ -42,7 +43,7 @@
         </form>
       </div>
       <div class="container-wps" id="container-wps">
-        <form action="/connect-wps" method="post">
+        <form action="/connect-wps">
           <h2>Conectare prin WPS</h2>
           <p>
             Pentru realizarea conexiunii la re&#355;ea se vor efectua

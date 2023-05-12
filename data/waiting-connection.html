@@ -55,11 +55,29 @@
             countdownEl.innerHTML = "";
             dotCount = 0;
           }
-
-          if (counter == 3) {
-            window.location = "/connect-wps-result";
-          }
         }, 1000);
+      };
+    </script>
+
+    <script>
+      var ws = new WebSocket("ws://192.168.4.1/ws");
+      ws.onmessage = function (event) {
+        var data = JSON.parse(event.data);
+
+        console.log("Received message: ", data);
+
+        setTimeout(function () {
+          if (data.status == "conectat") {
+            console.log("Should redirect to /success");
+            window.location.replace("/success");
+            return;
+          }
+
+          if (data.expired == "expired") {
+            console.log("Should redirect to /fail");
+            window.location.replace("/fail");
+          }
+        }, 10000);
       };
     </script>
   </head>
