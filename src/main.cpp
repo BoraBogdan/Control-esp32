@@ -1,5 +1,6 @@
 /*
- ?!  changed to ESPAsyncWebServer.h library
+ !  ligths are set up and working, but the button pressed action is read with a big delay
+ !  if wps not started on router wbsocket disconnectes and cannot reconnect back unitl wps is stopped or smth
 */
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
@@ -11,7 +12,7 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <Ticker.h>
-#include <AsyncDelay.h>
+#include <TickTwo.h>
 
 #define ESP_WPS_MODE      WPS_TYPE_PBC
 #define ESP_MANUFACTURER  "ESPRESSIF"
@@ -20,8 +21,19 @@
 #define ESP_DEVICE_NAME   "ESP STATION"
 #define DHTTYPE DHT11
 #define DHTPIN 33
+#define postInterval 10000             //Period waited until sending post request in millis
+#define connectionInterval 5000        //Period waited for a stable connection until sending a response
+#define delayCheckConn 5000            //After X ms is going to check wifi conn before redirecting
+#define soilHumidityPin 34
+#define resetButtonPin 23
+#define redPin 22
+#define greenPin 21
 
-AsyncDelay asyncDelay;
+//? Prototypes
+void waitForStableConn();
+void saveCredentials();
+void resetNetworkCredentials();
+
 DHT dht(DHTPIN, DHTTYPE);
 static esp_wps_config_t config;
 AsyncWebServer server(80);
@@ -29,17 +41,17 @@ AsyncWebSocket ws("/ws");
 Preferences preferences;
 HTTPClient http;
 Ticker ticker;
+Ticker checkForResetButtonPressed;
+TickTwo timerStatusConn(waitForStableConn, 10000, 1);
 StaticJsonDocument<200> networkStatusDoc;
 
 
-const unsigned int postInterval = 10000;               //Period waited until sending post request in millis
-const unsigned int connectionInterval = 5000;          //Period waited for a stable connection until sending a response
-const unsigned int delayCheckConn = 5000;              //After Xms is going to check wifi conn before redirecting
 bool connectionChecked = false;
-const uint8_t soilHumidityPin = 34;
-const uint8_t resetButtonPin = 23;
-const uint8_t ledPin = 22;
 bool timeExpired = false;
+bool intentionalDisconnect = false;
+bool credentialsSaved = false;
+bool resetButtonPressed = false;
+
 
 //*start wps methods
 void wpsInitConfig()
@@ -96,16 +108,16 @@ void WiFiEvent(WiFiEvent_t event, arduino_event_info_t info)
       break;
 
     case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
-      Serial.println("Disconnected from station, attempting reconnection");
-      WiFi.reconnect();
+      if (!intentionalDisconnect) 
+      {
+        Serial.println("Disconnected from station, attempting reconnection");
+        WiFi.reconnect();
+      }    
       break;
 
     case ARDUINO_EVENT_WPS_ER_SUCCESS:
       Serial.println("WPS Successfull, stopping WPS and connecting to: " + String(WiFi.SSID()));      
-      preferences.begin("Credentials",false);
-      preferences.putString("SSID", WiFi.SSID());
-      preferences.putString("Password", WiFi.psk());
-      preferences.end();
+      saveCredentials();
       wpsStop();
       delay(10);                              
       break;
@@ -151,20 +163,24 @@ void printIP()
   
 }
 
-// TODO DOC
+//* updates the json after starting the connection
 void waitForStableConn()
 {
-  // bool verifications = asyncDelay.isExpired() && !connectionChecked;
   if (WiFi.status() == WL_CONNECTED)
   {
+    Serial.println("Conectat");
     printIP();
     connectionChecked = true;
-    Serial.println("Conectat");
+    intentionalDisconnect = false;
+    saveCredentials();    
   } else if (WiFi.status() != WL_CONNECTED)
-  {
+  {    
+    Serial.println("Deconectat");
+    wpsStop();
+    esp_wifi_wps_disable();
+    intentionalDisconnect = true;
     timeExpired = true;
     connectionChecked = true;
-    Serial.println("Deconectat");
   }
 }
 
@@ -180,6 +196,7 @@ void setupServerRequests()
   });
 
   server.on("/home", HTTP_GET, [](AsyncWebServerRequest *request){
+    Serial.print("home");
     timeExpired = false;
     wpsStop();
     request->send(SPIFFS, "/home.html", "text/html");
@@ -195,6 +212,7 @@ void setupServerRequests()
 
   server.on("/fail", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(SPIFFS, "/connected-failed.html", "text/html");
+    connectionChecked = false;
   }); 
 
   server.on("/connect", HTTP_GET, [](AsyncWebServerRequest *request){
@@ -202,19 +220,20 @@ void setupServerRequests()
     String passwordFromClient = "";
 
     if (request->hasParam("ssid") && request->hasParam("password")) 
-    {      
+    {    
+      Serial.println("handle connect");  
       ssidFromClient = request->getParam("ssid")->value();
       passwordFromClient = request->getParam("password")->value();
       WiFi.begin(ssidFromClient.c_str(), passwordFromClient.c_str());    
       request->send(SPIFFS, "/waiting-connection.html", "text/html");
-      waitForStableConn();
+      timerStatusConn.start();
     }    
   });
 
   server.on("/connect-wps", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(SPIFFS, "/waiting-connection.html", "text/html");
     startConnectionWPS();
-    waitForStableConn();
+    timerStatusConn.start();    
   });
 }
 
@@ -315,21 +334,21 @@ void postRequestSendSoiltData()
 //* reset preferences with button and light led
 void resetNetworkCredentials() 
 {
-  if (digitalRead(resetButtonPin) == LOW)
+  if (resetButtonPressed)
   {
-    digitalWrite(ledPin, HIGH);
     preferences.begin("Credentials", false);
+    Serial.println("button apasat");
     preferences.clear();
     preferences.end();    
-  } else 
-  {
-    digitalWrite(ledPin, LOW);    
+    credentialsSaved = false;
+    resetButtonPressed = false;
   }
 }
 
 //* update json sent to the WebSocket client + sending it to all clients
 void sendConnectedStatus() 
 {   
+  Serial.print(ws.count());
   if (ws.count() > 0)
   {
     String json;
@@ -380,34 +399,74 @@ void checkPreferencesForCredentials()
   } else 
   {
     Serial.println("Connecting to WiFi...");
+    credentialsSaved = true;
     WiFi.begin(ssid.c_str(), password.c_str());    
-    wifiConnUpdateJSON();
+    wifiConnUpdateJSON();    
   }
   
 }
 
+//TODO name + desc
+void saveCredentials()
+{
+  preferences.begin("Credentials",false);
+  preferences.putString("SSID", WiFi.SSID());
+  preferences.putString("Password", WiFi.psk());
+  preferences.end();
+  credentialsSaved = true;
+}
+
+//TODO name + desc
+void lightLeds()
+{  
+  if (credentialsSaved)
+  {
+    digitalWrite(greenPin, HIGH);
+    digitalWrite(redPin, LOW);
+  } else 
+  {
+    digitalWrite(greenPin,  LOW);
+    digitalWrite(redPin, HIGH);
+  }
+}
+
+//TODO name + desc
+void checkButton()
+{
+  if (digitalRead(resetButtonPin) == LOW)
+  {
+    resetButtonPressed = true;
+  }
+}
 
 void setup()
 {
   Serial.begin(921600); 
   dht.begin();
+
   pinMode(resetButtonPin, INPUT);
-  pinMode(ledPin, OUTPUT); 
-  asyncDelay.start(delayCheckConn, AsyncDelay::MILLIS); 
+  pinMode(redPin, OUTPUT);
+  pinMode(greenPin, OUTPUT);   
+
   setupWiFi();
   checkPreferencesForCredentials();
   mountSPIFFS();
   setupServerRequests();
-  server.addHandler(&ws);
+
   Serial.println("Web server started!");   
+  server.addHandler(&ws);
   server.begin();   
-  ticker.attach(5, sendConnectedStatus);    
+
+  ticker.attach(2, sendConnectedStatus);   
+  checkForResetButtonPressed.attach_ms(200, resetNetworkCredentials);
 }
 
 void loop()
 {  
-  resetNetworkCredentials();  
+  lightLeds();
+  checkButton();
 
+  //TODO implement ticker for this
   unsigned long lastPostTime = 0;
   unsigned long currentTime = millis();
   if (currentTime - lastPostTime >= postInterval)
@@ -416,4 +475,6 @@ void loop()
     postRequestSendSoiltData();
     lastPostTime = currentTime;
   } 
+
+  timerStatusConn.update();
 }

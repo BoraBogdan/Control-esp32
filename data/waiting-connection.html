@@ -60,25 +60,33 @@
     </script>
 
     <script>
-      var ws = new WebSocket("ws://192.168.4.1/ws");
-      ws.onmessage = function (event) {
-        var data = JSON.parse(event.data);
+      function connectWebSocket() {
+        var ws = new WebSocket("ws://192.168.4.1/ws");
+        ws.onmessage = function (event) {
+          var data = JSON.parse(event.data);
 
-        console.log("Received message: ", data);
+          console.log("Received message: ", data);
 
-        setTimeout(function () {
-          if (data.status == "conectat") {
-            console.log("Should redirect to /success");
-            window.location.replace("/success");
-            return;
-          }
+          setTimeout(function () {
+            if (data.status == "conectat") {
+              console.log("Should redirect to /success");
+              window.location.replace("/success");
+            }
 
-          if (data.expired == "expired") {
-            console.log("Should redirect to /fail");
-            window.location.replace("/fail");
-          }
-        }, 10000);
-      };
+            if (data.expired == "expired") {
+              console.log("Should redirect to /fail");
+              window.location.replace("/fail");
+            }
+          }, 5000);
+        };
+
+        ws.onclose = function (event) {
+          console.log("WebSocket disconnected");
+          setTimeout(connectWebSocket, 2000);
+        };
+      }
+
+      connectWebSocket();
     </script>
   </head>
   <body>
