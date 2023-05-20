@@ -1,6 +1,9 @@
 /*
- !  ligths are set up and working, but the button pressed action is read with a big delay
- !  if wps not started on router wbsocket disconnectes and cannot reconnect back unitl wps is stopped or smth
+ *  LEDs working
+ *  Reset button working
+ *  Credentials connect working
+ *  WPS working when wps started on router
+ ?  if wps is not started on router you need to reconnect to the mcu to get the fail page
 */
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
@@ -22,17 +25,17 @@
 #define DHTTYPE DHT11
 #define DHTPIN 33
 #define postInterval 10000             //Period waited until sending post request in millis
-#define connectionInterval 5000        //Period waited for a stable connection until sending a response
-#define delayCheckConn 5000            //After X ms is going to check wifi conn before redirecting
+#define connectionInterval 10000       //Period waited for a stable connection until sending a response (in ms)
 #define soilHumidityPin 34
 #define resetButtonPin 23
 #define redPin 22
 #define greenPin 21
 
-//? Prototypes
+//? --- Prototypes ---
 void waitForStableConn();
 void saveCredentials();
 void resetNetworkCredentials();
+void checkPreferencesForCredentials();
 
 DHT dht(DHTPIN, DHTTYPE);
 static esp_wps_config_t config;
@@ -42,15 +45,14 @@ Preferences preferences;
 HTTPClient http;
 Ticker ticker;
 Ticker checkForResetButtonPressed;
-TickTwo timerStatusConn(waitForStableConn, 10000, 1);
+TickTwo timerStatusConn(waitForStableConn, connectionInterval, 1);
 StaticJsonDocument<200> networkStatusDoc;
 
-
-bool connectionChecked = false;
 bool timeExpired = false;
-bool intentionalDisconnect = false;
 bool credentialsSaved = false;
 bool resetButtonPressed = false;
+unsigned long lastPostTime = 0;
+bool wpsStarted = false;
 
 
 //*start wps methods
@@ -107,12 +109,9 @@ void WiFiEvent(WiFiEvent_t event, arduino_event_info_t info)
       Serial.println(WiFi.localIP().toString());            
       break;
 
-    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
-      if (!intentionalDisconnect) 
-      {
-        Serial.println("Disconnected from station, attempting reconnection");
-        WiFi.reconnect();
-      }    
+    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:      
+      Serial.println("Disconnected from station, attempting reconnection");
+      WiFi.reconnect();
       break;
 
     case ARDUINO_EVENT_WPS_ER_SUCCESS:
@@ -151,7 +150,8 @@ void startConnectionWPS()
   WiFi.onEvent(WiFiEvent);
   Serial.println("Starting WPS");
   wpsInitConfig();
-  wpsStart();       
+  wpsStart(); 
+  wpsStarted = true;
 }
 
 //* if connection to WiFi is successfulf prints the ip
@@ -170,17 +170,17 @@ void waitForStableConn()
   {
     Serial.println("Conectat");
     printIP();
-    connectionChecked = true;
-    intentionalDisconnect = false;
+    wpsStarted = false;
     saveCredentials();    
   } else if (WiFi.status() != WL_CONNECTED)
   {    
     Serial.println("Deconectat");
-    wpsStop();
-    esp_wifi_wps_disable();
-    intentionalDisconnect = true;
-    timeExpired = true;
-    connectionChecked = true;
+    timeExpired = true;    
+    if (wpsStarted) 
+    {
+      ESP.restart();
+    }
+    
   }
 }
 
@@ -188,6 +188,7 @@ void waitForStableConn()
 void setupServerRequests()
 {    
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    checkPreferencesForCredentials();
     request->send(SPIFFS, "/check-saved-network.html", "text/html");
   });
 
@@ -198,7 +199,6 @@ void setupServerRequests()
   server.on("/home", HTTP_GET, [](AsyncWebServerRequest *request){
     Serial.print("home");
     timeExpired = false;
-    wpsStop();
     request->send(SPIFFS, "/home.html", "text/html");
   });
 
@@ -212,7 +212,6 @@ void setupServerRequests()
 
   server.on("/fail", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(SPIFFS, "/connected-failed.html", "text/html");
-    connectionChecked = false;
   }); 
 
   server.on("/connect", HTTP_GET, [](AsyncWebServerRequest *request){
@@ -309,7 +308,7 @@ void postRequestSendSoiltData()
 
     StaticJsonDocument<200> doc;    
     doc["soilHumidity"] = soilHumidity; 
-    doc["microcontrollerID"] = 1;
+    doc["microcontrollerID"] = 0;
     String jsonStr;
     serializeJson(doc, jsonStr);    
     
@@ -398,15 +397,19 @@ void checkPreferencesForCredentials()
     timeExpired = true;
   } else 
   {
+    if (WiFi.status() != WL_CONNECTED)
+    {    
     Serial.println("Connecting to WiFi...");
     credentialsSaved = true;
     WiFi.begin(ssid.c_str(), password.c_str());    
     wifiConnUpdateJSON();    
+    }
   }
   
 }
 
-//TODO name + desc
+
+//* puts WiFi credentials in preferences and sets credentialsSaved = true
 void saveCredentials()
 {
   preferences.begin("Credentials",false);
@@ -416,7 +419,7 @@ void saveCredentials()
   credentialsSaved = true;
 }
 
-//TODO name + desc
+//* light leds accordingly
 void lightLeds()
 {  
   if (credentialsSaved)
@@ -430,13 +433,21 @@ void lightLeds()
   }
 }
 
-//TODO name + desc
-void checkButton()
+//* cheking if the button is pressed and sets flag
+void IRAM_ATTR checkButtonISR()
 {
-  if (digitalRead(resetButtonPin) == LOW)
-  {
-    resetButtonPressed = true;
-  }
+  resetButtonPressed = true;
+}
+
+//* perodic post requesti in loop
+void sendRequests(ulong currentTime)
+{
+  if (currentTime - lastPostTime >= postInterval)
+  {   
+    postRequestSendDhtData();    
+    postRequestSendSoiltData();
+    lastPostTime = currentTime;
+  } 
 }
 
 void setup()
@@ -453,28 +464,21 @@ void setup()
   mountSPIFFS();
   setupServerRequests();
 
-  Serial.println("Web server started!");   
-  server.addHandler(&ws);
-  server.begin();   
+  attachInterrupt(resetButtonPin, checkButtonISR, FALLING);
 
+  Serial.println("Web server started!");     
+  server.addHandler(&ws);  
+  server.begin();   
   ticker.attach(2, sendConnectedStatus);   
   checkForResetButtonPressed.attach_ms(200, resetNetworkCredentials);
 }
 
 void loop()
 {  
-  lightLeds();
-  checkButton();
-
-  //TODO implement ticker for this
-  unsigned long lastPostTime = 0;
+  lightLeds();  
+  
   unsigned long currentTime = millis();
-  if (currentTime - lastPostTime >= postInterval)
-  {   
-    postRequestSendDhtData();    
-    postRequestSendSoiltData();
-    lastPostTime = currentTime;
-  } 
+  sendRequests(currentTime);
 
   timerStatusConn.update();
 }
