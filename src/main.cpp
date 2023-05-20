@@ -358,32 +358,6 @@ void sendConnectedStatus()
   }  
 }
 
-/* 
-* checking for stable WiFi connection for 5s. If connection failes         -> sets "expired" tag from json to expired
-*                                             If connection is successful  -> prints ip from the network
-*/
-void wifiConnUpdateJSON ()
-{
-  int cycles = 0;
-  while (WiFi.status() != WL_CONNECTED && cycles < 10)
-  {   
-    delay(500);     
-    Serial.print(".");
-    cycles++;    
-  }
-  Serial.println();
-
-  if (cycles == 10)
-  {
-    timeExpired = true;
-  }
-
-  if (WiFi.status() == WL_CONNECTED)
-  {
-  printIP();
-  }
-}
-
 //* check for saved network credentials in preferences
 void checkPreferencesForCredentials()
 {
@@ -402,7 +376,7 @@ void checkPreferencesForCredentials()
     Serial.println("Connecting to WiFi...");
     credentialsSaved = true;
     WiFi.begin(ssid.c_str(), password.c_str());    
-    wifiConnUpdateJSON();    
+    timerStatusConn.start();   
     }
   }
   
