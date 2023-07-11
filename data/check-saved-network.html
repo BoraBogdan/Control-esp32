@@ -41,12 +41,24 @@
     <meta http-equiv="X-UA-Compatible" content="IE=edge" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Conectare re&#355;ea</title>
+    <script src="jquery-3.6.4.js"></script>
+  </head>
+  <body>
+    <div class="main-container">
+      <div class="container">
+        <h2>
+          Se verific&#259; re&#355;elele salvate <br />
+          <span id="status"></span>
+        </h2>
+      </div>
+    </div>
+
     <script>
       window.onload = function () {
         var dotCount = 0;
         var counter = 0;
         var countdown = setInterval(function () {
-          var countdownEl = document.getElementById("countdown");
+          var countdownEl = document.getElementById("status");
           countdownEl.innerHTML += ".";
           dotCount++;
 
@@ -55,21 +67,30 @@
             countdownEl.innerHTML = "";
             dotCount = 0;
           }
-
-          if (counter == 3) {
-            window.location = "/connect-wps-result";
-          }
         }, 1000);
       };
     </script>
-  </head>
-  <body>
-    <div class="main-container">
-      <div class="container">
-        <h2>
-          Se a&#351;teapta conexiunea la re&#355;ea<span id="countdown"></span>
-        </h2>
-      </div>
-    </div>
+
+    <script>
+      var ws = new WebSocket("ws://" + window.location.host + "/ws");
+      ws.onmessage = function (event) {
+        var data = JSON.parse(event.data);
+
+        console.log("Received message: ", data);
+        console.log("Should change status");
+        $("#status").text(data.status);
+
+        if (data.status == "conectat") {
+          console.log("Should redirect to /success");
+          window.location.replace("/success");
+          return;
+        }
+
+        if (data.expired == "expired") {
+          console.log("Should redirect to /home");
+          window.location.replace("/home");
+        }
+      };
+    </script>
   </body>
 </html>
