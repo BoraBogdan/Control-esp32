@@ -31,6 +31,13 @@
 #define redPin 22
 #define greenPin 21
 
+// --- New AWS backend config ---
+const char*          SERVER_HOST       = "54.237.35.4";  // update after each ECS redeploy
+const int            SERVER_PORT       = 8080;
+const char*          DEVICE_INDEX      = "ESP32-001";             // must match microcontroller record in DB
+const char*          API_KEY           = "-oOpIiudzQz1WX02O20M-YY0fZeGs6Aj5Pumb2rAUKE";           // raw key from POST /api/v1/microcontrollers
+const unsigned long  HEARTBEAT_INTERVAL = 300000;                 // 5 minutes in ms
+
 //? --- Prototypes ---
 void waitForStableConn();
 void saveCredentials();
@@ -51,7 +58,8 @@ StaticJsonDocument<200> networkStatusDoc;
 bool timeExpired = false;
 bool credentialsSaved = false;
 bool resetButtonPressed = false;
-unsigned long lastPostTime = 0;
+unsigned long lastPostTime  = 0;
+unsigned long lastHeartbeat = 0;
 bool wpsStarted = false;
 
 
@@ -243,7 +251,7 @@ void setupWiFi()
   WiFi.disconnect();
   WiFi.setAutoConnect(false);
   WiFi.setAutoReconnect(false);
-  WiFi.softAP("MyESP32AP", "password");  
+  WiFi.softAP("MyESP32AP", "passwordSecure");  
   Serial.println("\n\n" + WiFi.softAPIP().toString());  
 }
 
@@ -257,77 +265,99 @@ void mountSPIFFS()
 }
 
 //*start post request methods
-void postRequestSendDhtData() 
+
+//* sends all sensor readings in one bulk POST to the new AWS backend
+void postSensorDataBulk()
 {
   float temperature = dht.readTemperature();
-  float airHumidity = dht.readHumidity(); 
+  float airHumidity = dht.readHumidity();
 
   if (isnan(temperature) || isnan(airHumidity))
   {
-    Serial.println("Failed to read data form sensor");  
+    Serial.println("Failed to read data from DHT sensor");
     return;
-  } 
+  }
+
+  // Map raw ADC (0-4095) to soil moisture % (dry=0%, wet=100%)
+  int   rawSoil  = analogRead(soilHumidityPin);
+  float soilPct  = (4095 - rawSoil) * 100.0f / 4095.0f;
 
   if (WiFi.status() == WL_CONNECTED)
-  {      
-    http.begin("http://192.168.2.101:8080/dht/addData");
-    http.addHeader("Content-Type", "application/json");    
+  {
+    String url = String("http://") + SERVER_HOST + ":" + SERVER_PORT
+                 + "/api/v1/sensor-data/device/" + DEVICE_INDEX + "/bulk";
 
-    StaticJsonDocument<200> doc;    
-    doc["airHumidity"] = airHumidity;
-    doc["temperature"] = temperature;    
-    doc["microcontrollerID"] = 1;
+    http.begin(url);
+    http.addHeader("Content-Type", "application/json");
+    http.addHeader("X-API-Key", API_KEY);
+
+    // Build JSON array: 3 readings — TEMPERATURE, HUMIDITY, SOIL_MOISTURE
+    StaticJsonDocument<512> doc;
+    JsonArray array = doc.to<JsonArray>();
+
+    JsonObject tempObj = array.createNestedObject();
+    tempObj["sensorType"]  = "TEMPERATURE";
+    tempObj["value"]       = temperature;
+    tempObj["unit"]        = "°C";
+    tempObj["temperature"] = temperature;
+    tempObj["humidity"]    = airHumidity;
+
+    JsonObject humObj = array.createNestedObject();
+    humObj["sensorType"] = "HUMIDITY";
+    humObj["value"]      = airHumidity;
+    humObj["unit"]       = "%";
+    humObj["humidity"]   = airHumidity;
+
+    JsonObject soilObj = array.createNestedObject();
+    soilObj["sensorType"]   = "SOIL_MOISTURE";
+    soilObj["value"]        = soilPct;
+    soilObj["unit"]         = "%";
+    soilObj["soilMoisture"] = soilPct;
+
     String jsonStr;
-    serializeJson(doc, jsonStr);    
-    
-    int httpResponseCode = http.POST(jsonStr);   
+    serializeJson(doc, jsonStr);
+
+    int httpResponseCode = http.POST(jsonStr);
 
     if (httpResponseCode > 0)
-    {      
+    {
       String response = http.getString();
-      Serial.println("\nStatus code: " + String(httpResponseCode));
-      Serial.println(response);        
+      Serial.println("\nSensor bulk POST — status: " + String(httpResponseCode));
+      Serial.println(response);
       Serial.println();
     } else
     {
-      Serial.println("Error on HTTP request");
-      Serial.println("\nStatus code: " + String(httpResponseCode) + "\n");
+      Serial.println("Error on sensor bulk POST");
+      Serial.println("Status code: " + String(httpResponseCode) + "\n");
     }
-    http.end();     
-  } 
+    http.end();
+  }
 }
 
-void postRequestSendSoiltData() 
+//* sends a heartbeat to keep last_seen fresh (called every 5 minutes)
+void sendHeartbeat()
 {
-  ushort soilHumidity = analogRead(soilHumidityPin);
-
   if (WiFi.status() == WL_CONNECTED)
-  {      
-    http.begin("http://192.168.2.101:8080/soil/addSoilData");
-    http.addHeader("Content-Type", "application/json");    
+  {
+    String url = String("http://") + SERVER_HOST + ":" + SERVER_PORT
+                 + "/api/v1/microcontrollers/" + DEVICE_INDEX + "/heartbeat";
 
-    StaticJsonDocument<200> doc;    
-    doc["soilHumidity"] = soilHumidity; 
-    doc["microcontrollerID"] = 0;
-    String jsonStr;
-    serializeJson(doc, jsonStr);    
-    
-    int httpResponseCode = http.POST(jsonStr);   
+    http.begin(url);
+    http.addHeader("X-API-Key", API_KEY);
+
+    int httpResponseCode = http.POST("");
 
     if (httpResponseCode > 0)
-    {      
-      String response = http.getString();
-      Serial.println("\nStatus code: " + String(httpResponseCode));
-      Serial.println(response);        
-      Serial.println();
+    {
+      Serial.println("Heartbeat — status: " + String(httpResponseCode));
     } else
     {
-      Serial.println("Error on HTTP request");
-      Serial.println("\nStatus code: " + String(httpResponseCode) + "\n");
+      Serial.println("Heartbeat failed — status: " + String(httpResponseCode));
     }
-    http.end();     
-  } 
+    http.end();
+  }
 }
+
 //*end post request methods
 
 //* reset preferences with button and light led
@@ -413,15 +443,20 @@ void IRAM_ATTR checkButtonISR()
   resetButtonPressed = true;
 }
 
-//* perodic post requesti in loop
+//* periodic sensor post + heartbeat in loop
 void sendRequests(ulong currentTime)
 {
   if (currentTime - lastPostTime >= postInterval)
-  {   
-    postRequestSendDhtData();    
-    postRequestSendSoiltData();
+  {
+    postSensorDataBulk();
     lastPostTime = currentTime;
-  } 
+  }
+
+  if (currentTime - lastHeartbeat >= HEARTBEAT_INTERVAL)
+  {
+    sendHeartbeat();
+    lastHeartbeat = currentTime;
+  }
 }
 
 void setup()
@@ -433,7 +468,7 @@ void setup()
   pinMode(redPin, OUTPUT);
   pinMode(greenPin, OUTPUT);   
 
-  setupWiFi();
+  setupWiFi();  
   checkPreferencesForCredentials();
   mountSPIFFS();
   setupServerRequests();
