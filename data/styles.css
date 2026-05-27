@@ -202,3 +202,52 @@ input:checked + .slider:before {
 .slider.round:before {
   border-radius: 50%;
 }
+
+/* Button row — flex wrapper for side-by-side button pairs */
+.button-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 1%;
+}
+
+.button-row .button-connect {
+  margin-top: 0;
+}
+
+/* Anchor-styled buttons shared base */
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  color: white;
+  font-size: 14px;
+  font-family: sans-serif;
+  text-transform: uppercase;
+  border-radius: 4px;
+  text-decoration: none;
+  cursor: pointer;
+  transition: 0.3s;
+}
+
+.button-link:hover {
+  opacity: 0.7;
+}
+
+/* Blue variant — navigate to MCU config page */
+.button-link-nav {
+  width: 148px;
+  background: #4b56d2;
+}
+
+/* Grey variant — back / cancel */
+.button-link-back {
+  width: 108px;
+  background: #888;
+}
+
+/* Config container — slightly taller than default to fit two form fields */
+.container-config {
+  height: 320px;
+}

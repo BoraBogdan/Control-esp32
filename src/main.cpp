@@ -26,17 +26,17 @@
 #define DHTPIN 33
 #define postInterval 10000             //Period waited until sending post request in millis
 #define connectionInterval 10000       //Period waited for a stable connection until sending a response (in ms)
-#define soilHumidityPin 34
-#define resetButtonPin 23
-#define redPin 22
-#define greenPin 21
+#define soilHumidityPin   34
+#define resetButtonPin    23
+#define redPin            22
+#define greenPin          21
+#define yellowPin         19   // yellow LED  — MCU config saved indicator
+#define configResetPin    16
 
-// --- New AWS backend config ---
-const char*          SERVER_HOST       = "54.237.35.4";  // update after each ECS redeploy
-const int            SERVER_PORT       = 8080;
-const char*          DEVICE_INDEX      = "ESP32-001";             // must match microcontroller record in DB
-const char*          API_KEY           = "-oOpIiudzQz1WX02O20M-YY0fZeGs6Aj5Pumb2rAUKE";           // raw key from POST /api/v1/microcontrollers
-const unsigned long  HEARTBEAT_INTERVAL = 300000;                 // 5 minutes in ms
+// --- AWS backend config (stored in NVS — not hardcoded) ---
+const char*         SERVER_HOST       = "54.237.35.4";  // update after each ECS redeploy
+const int           SERVER_PORT       = 8080;
+const unsigned long HEARTBEAT_INTERVAL = 300000;        // 5 minutes in ms
 
 //? --- Prototypes ---
 void waitForStableConn();
@@ -52,6 +52,7 @@ Preferences preferences;
 HTTPClient http;
 Ticker ticker;
 Ticker checkForResetButtonPressed;
+Ticker checkForConfigReset;
 TickTwo timerStatusConn(waitForStableConn, connectionInterval, 1);
 StaticJsonDocument<200> networkStatusDoc;
 
@@ -61,6 +62,12 @@ bool resetButtonPressed = false;
 unsigned long lastPostTime  = 0;
 unsigned long lastHeartbeat = 0;
 bool wpsStarted = false;
+
+// MCU config (API key + device index stored in NVS namespace "Config")
+bool   configSaved              = false;
+bool   configResetButtonPressed = false;
+String g_apiKey      = "";
+String g_deviceIndex = "";
 
 
 //*start wps methods
@@ -192,20 +199,79 @@ void waitForStableConn()
   }
 }
 
+//* load API key + device index from NVS "Config" namespace
+void loadConfig()
+{
+  preferences.begin("Config", true);          // read-only
+  g_apiKey      = preferences.getString("ApiKey",      "");
+  g_deviceIndex = preferences.getString("DeviceIndex", "");
+  preferences.end();
+  if (g_apiKey.length() > 0 && g_deviceIndex.length() > 0) {    
+    configSaved = true;
+  }
+}
+
+//* ISR — sets flag only, same pattern as the WiFi reset button
+void IRAM_ATTR configResetISR()
+{
+  configResetButtonPressed = true;
+}
+
+//* wipe "Config" NVS — called by Ticker every 200 ms
+void checkConfigResetButton()
+{
+  if (configResetButtonPressed)
+  {    
+    preferences.begin("Config", false);
+    preferences.clear();
+    preferences.end();
+    g_apiKey      = "";
+    g_deviceIndex = "";
+    configSaved   = false;
+    configResetButtonPressed = false;
+    Serial.println("MCU config cleared from NVS");
+  }
+}
+
 //* setup server requests
 void setupServerRequests()
 {    
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
-    checkPreferencesForCredentials();
-    request->send(SPIFFS, "/check-saved-network.html", "text/html");
+    if (!configSaved) {
+      request->send(SPIFFS, "/api-key.html", "text/html");
+    } else {
+      checkPreferencesForCredentials();
+      request->send(SPIFFS, "/check-saved-network.html", "text/html");
+    }
+  });
+
+  server.on("/api-key", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send(SPIFFS, "/api-key.html", "text/html");
+  });
+
+  server.on("/save-config", HTTP_GET, [](AsyncWebServerRequest *request){
+    if (request->hasParam("apiKey") && request->hasParam("deviceIndex")) {
+      String key = request->getParam("apiKey")->value();
+      String idx = request->getParam("deviceIndex")->value();
+      if (key.length() > 0 && idx.length() > 0) {
+        preferences.begin("Config", false);
+        preferences.putString("ApiKey",      key);
+        preferences.putString("DeviceIndex", idx);
+        preferences.end();
+        g_apiKey      = key;
+        g_deviceIndex = idx;
+        configSaved   = true;
+        Serial.println("MCU config saved — device: " + idx);
+      }
+    }
+    request->redirect("/home");
   });
 
   server.on("/jquery-3.6.4.js", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(SPIFFS, "/jquery-3.6.4.js", "text/javascript");
   });
 
-  server.on("/home", HTTP_GET, [](AsyncWebServerRequest *request){
-    Serial.print("home");
+  server.on("/home", HTTP_GET, [](AsyncWebServerRequest *request){    
     timeExpired = false;
     request->send(SPIFFS, "/home.html", "text/html");
   });
@@ -222,19 +288,19 @@ void setupServerRequests()
     request->send(SPIFFS, "/connected-failed.html", "text/html");
   }); 
 
-  server.on("/connect", HTTP_GET, [](AsyncWebServerRequest *request){
+  server.on("/connect", HTTP_POST, [](AsyncWebServerRequest *request){
     String ssidFromClient = "";
     String passwordFromClient = "";
 
-    if (request->hasParam("ssid") && request->hasParam("password")) 
-    {    
-      Serial.println("handle connect");  
-      ssidFromClient = request->getParam("ssid")->value();
-      passwordFromClient = request->getParam("password")->value();
-      WiFi.begin(ssidFromClient.c_str(), passwordFromClient.c_str());    
+    if (request->hasParam("ssid", true) && request->hasParam("password", true))
+    {
+      Serial.println("handle connect");
+      ssidFromClient     = request->getParam("ssid",     true)->value();
+      passwordFromClient = request->getParam("password", true)->value();
+      WiFi.begin(ssidFromClient.c_str(), passwordFromClient.c_str());
       request->send(SPIFFS, "/waiting-connection.html", "text/html");
       timerStatusConn.start();
-    }    
+    }
   });
 
   server.on("/connect-wps", HTTP_GET, [](AsyncWebServerRequest *request){
@@ -265,7 +331,6 @@ void mountSPIFFS()
 }
 
 //*start post request methods
-
 //* sends all sensor readings in one bulk POST to the new AWS backend
 void postSensorDataBulk()
 {
@@ -285,11 +350,11 @@ void postSensorDataBulk()
   if (WiFi.status() == WL_CONNECTED)
   {
     String url = String("http://") + SERVER_HOST + ":" + SERVER_PORT
-                 + "/api/v1/sensor-data/device/" + DEVICE_INDEX + "/bulk";
+                 + "/api/v1/sensor-data/device/" + g_deviceIndex + "/bulk";
 
     http.begin(url);
     http.addHeader("Content-Type", "application/json");
-    http.addHeader("X-API-Key", API_KEY);
+    http.addHeader("X-API-Key", g_apiKey.c_str());
 
     // Build JSON array: 3 readings — TEMPERATURE, HUMIDITY, SOIL_MOISTURE
     StaticJsonDocument<512> doc;
@@ -340,10 +405,10 @@ void sendHeartbeat()
   if (WiFi.status() == WL_CONNECTED)
   {
     String url = String("http://") + SERVER_HOST + ":" + SERVER_PORT
-                 + "/api/v1/microcontrollers/" + DEVICE_INDEX + "/heartbeat";
+                 + "/api/v1/microcontrollers/" + g_deviceIndex + "/heartbeat";
 
     http.begin(url);
-    http.addHeader("X-API-Key", API_KEY);
+    http.addHeader("X-API-Key", g_apiKey.c_str());
 
     int httpResponseCode = http.POST("");
 
@@ -359,8 +424,7 @@ void sendHeartbeat()
 }
 
 //*end post request methods
-
-//* reset preferences with button and light led
+//* reset preferences with button
 void resetNetworkCredentials() 
 {
   if (resetButtonPressed)
@@ -425,16 +489,12 @@ void saveCredentials()
 
 //* light leds accordingly
 void lightLeds()
-{  
-  if (credentialsSaved)
-  {
-    digitalWrite(greenPin, HIGH);
-    digitalWrite(redPin, LOW);
-  } else 
-  {
-    digitalWrite(greenPin,  LOW);
-    digitalWrite(redPin, HIGH);
-  }
+{
+  // Green / Red: WiFi credentials state
+  digitalWrite(greenPin, credentialsSaved ? HIGH : LOW);
+  digitalWrite(redPin,   credentialsSaved ? LOW  : HIGH);
+  // Yellow: MCU config state (API key + device index saved)
+  digitalWrite(yellowPin, configSaved ? HIGH : LOW);
 }
 
 //* cheking if the button is pressed and sets flag
@@ -461,25 +521,30 @@ void sendRequests(ulong currentTime)
 
 void setup()
 {
-  Serial.begin(921600); 
+  Serial.begin(921600);
   dht.begin();
 
   pinMode(resetButtonPin, INPUT);
-  pinMode(redPin, OUTPUT);
-  pinMode(greenPin, OUTPUT);   
+  pinMode(redPin,         OUTPUT);
+  pinMode(greenPin,       OUTPUT);
+  pinMode(yellowPin,      OUTPUT);
+  pinMode(configResetPin, INPUT);
 
-  setupWiFi();  
-  checkPreferencesForCredentials();
+  loadConfig();
+  setupWiFi();
+  if (configSaved) checkPreferencesForCredentials();
   mountSPIFFS();
   setupServerRequests();
 
-  attachInterrupt(resetButtonPin, checkButtonISR, FALLING);
+  attachInterrupt(resetButtonPin,  checkButtonISR,   FALLING);
+  attachInterrupt(configResetPin,  configResetISR,   FALLING);
 
-  Serial.println("Web server started!");     
-  server.addHandler(&ws);  
-  server.begin();   
-  ticker.attach(2, sendConnectedStatus);   
+  Serial.println("Web server started!");
+  server.addHandler(&ws);
+  server.begin();
+  ticker.attach(2, sendConnectedStatus);
   checkForResetButtonPressed.attach_ms(200, resetNetworkCredentials);
+  checkForConfigReset.attach_ms(200, checkConfigResetButton);
 }
 
 void loop()

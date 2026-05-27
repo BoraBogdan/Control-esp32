@@ -17,7 +17,7 @@
         </label>
       </div>
       <div class="container" id="container">
-        <form action="/connect">
+        <form action="/connect" method="post">
           <h1>Conectare re&#355;ea</h1>
           <div class="form-group">
             <label for="ssid">Nume re&#355;ea</label>
@@ -39,7 +39,10 @@
               placeholder="Parol&#259;"
             />
           </div>
-          <input type="submit" class="button-connect" value="Conectare" />
+          <div class="button-row">
+            <input type="submit" class="button-connect" value="Conectare" />
+            <a href="/api-key?back=1" class="button-link button-link-nav">Schimb&#259; date MCU</a>
+          </div>
         </form>
       </div>
       <div class="container-wps" id="container-wps">
