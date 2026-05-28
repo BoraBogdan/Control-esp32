@@ -34,9 +34,13 @@
 #define configResetPin    16
 
 // --- AWS backend config (stored in NVS — not hardcoded) ---
-const char*         SERVER_HOST       = "54.237.35.4";  // update after each ECS redeploy
+const char*         SERVER_HOST       = "34.205.177.195";  // update after each ECS redeploy
 const int           SERVER_PORT       = 8080;
 const unsigned long HEARTBEAT_INTERVAL = 300000;        // 5 minutes in ms
+
+// Set to 1 to send synthetic values for the 5 sensors not physically wired yet
+// (air pressure, CO2, soil temp, soil pH, light). Flip to 0 once real sensors land.
+#define MOCK_EXTRA_SENSORS  1
 
 //? --- Prototypes ---
 void waitForStableConn();
@@ -331,8 +335,78 @@ void mountSPIFFS()
 }
 
 //*start post request methods
-//* sends all sensor readings in one bulk POST to the new AWS backend
-void postSensorDataBulk()
+
+#if MOCK_EXTRA_SENSORS
+//* Mock-sensor helpers — synthetic 24-hour cycle from millis(), random walks
+//* Each function maintains internal state with a `static` so successive calls
+//* drift smoothly instead of jumping. Day phase wraps every 24h since boot.
+static float dayPhase()
+{
+  unsigned long secOfDay = (millis() / 1000UL) % 86400UL;
+  return secOfDay / 86400.0f;                            // 0..1
+}
+
+static float daylight()                                  // 0 at "night", peak 1 at "noon"
+{
+  float p = dayPhase();
+  float v = sinf(p * 2.0f * PI - PI / 2.0f);
+  return v < 0.0f ? 0.0f : v;
+}
+
+static float mockAirPressure()                           // hPa, drift ±0.3 per call, clamp 990–1035
+{
+  static float v = 1013.25f;
+  v += random(-3, 4) / 10.0f;
+  if (v < 990.0f)  v = 990.0f;
+  if (v > 1035.0f) v = 1035.0f;
+  return v;
+}
+
+static float mockCo2()                                   // ppm, high at night, low at day, clamp 380–1200
+{
+  static float drift = 0.0f;
+  drift += random(-10, 11) / 10.0f;
+  if (drift < -100.0f) drift = -100.0f;
+  if (drift >  100.0f) drift =  100.0f;
+  float v = 800.0f - daylight() * 350.0f + drift;
+  if (v < 380.0f)  v = 380.0f;
+  if (v > 1200.0f) v = 1200.0f;
+  return v;
+}
+
+static float mockSoilTemp()                              // °C, slow drift 17–22
+{
+  static float v = 18.5f;
+  v += random(-5, 6) / 100.0f;
+  if (v < 17.0f) v = 17.0f;
+  if (v > 22.0f) v = 22.0f;
+  return v;
+}
+
+static float mockSoilPh()                                // pH, slow drift 5.5–7.5
+{
+  static float v = 6.5f;
+  v += random(-1, 2) / 100.0f;
+  if (v < 5.5f) v = 5.5f;
+  if (v > 7.5f) v = 7.5f;
+  return v;
+}
+
+static float mockLight()                                 // lux, follows daylight curve, clamp 0–35000
+{
+  static float drift = 0.0f;
+  drift += random(-100, 101) / 100.0f;
+  if (drift < -2000.0f) drift = -2000.0f;
+  if (drift >  2000.0f) drift =  2000.0f;
+  float v = daylight() * 30000.0f + drift;
+  if (v < 0.0f)     v = 0.0f;
+  if (v > 35000.0f) v = 35000.0f;
+  return v;
+}
+#endif  // MOCK_EXTRA_SENSORS
+
+//* sends all sensor readings in one flat JSON POST to the single-reading endpoint
+void postSensorData()
 {
   float temperature = dht.readTemperature();
   float airHumidity = dht.readHumidity();
@@ -350,34 +424,25 @@ void postSensorDataBulk()
   if (WiFi.status() == WL_CONNECTED)
   {
     String url = String("http://") + SERVER_HOST + ":" + SERVER_PORT
-                 + "/api/v1/sensor-data/device/" + g_deviceIndex + "/bulk";
+                 + "/api/v1/sensor-data/device/" + g_deviceIndex;
 
     http.begin(url);
     http.addHeader("Content-Type", "application/json");
     http.addHeader("X-API-Key", g_apiKey.c_str());
 
-    // Build JSON array: 3 readings — TEMPERATURE, HUMIDITY, SOIL_MOISTURE
-    StaticJsonDocument<512> doc;
-    JsonArray array = doc.to<JsonArray>();
+    // Build flat JSON object — all sensor values as direct fields
+    StaticJsonDocument<384> doc;
+    doc["temperature"]  = temperature;
+    doc["humidity"]     = airHumidity;
+    doc["soilMoisture"] = soilPct;
 
-    JsonObject tempObj = array.createNestedObject();
-    tempObj["sensorType"]  = "TEMPERATURE";
-    tempObj["value"]       = temperature;
-    tempObj["unit"]        = "°C";
-    tempObj["temperature"] = temperature;
-    tempObj["humidity"]    = airHumidity;
-
-    JsonObject humObj = array.createNestedObject();
-    humObj["sensorType"] = "HUMIDITY";
-    humObj["value"]      = airHumidity;
-    humObj["unit"]       = "%";
-    humObj["humidity"]   = airHumidity;
-
-    JsonObject soilObj = array.createNestedObject();
-    soilObj["sensorType"]   = "SOIL_MOISTURE";
-    soilObj["value"]        = soilPct;
-    soilObj["unit"]         = "%";
-    soilObj["soilMoisture"] = soilPct;
+#if MOCK_EXTRA_SENSORS
+    doc["airPressure"]     = mockAirPressure();
+    doc["co2Level"]        = mockCo2();
+    doc["soilTemperature"] = mockSoilTemp();
+    doc["soilPh"]          = mockSoilPh();
+    doc["lightIntensity"]  = mockLight();
+#endif
 
     String jsonStr;
     serializeJson(doc, jsonStr);
@@ -387,12 +452,12 @@ void postSensorDataBulk()
     if (httpResponseCode > 0)
     {
       String response = http.getString();
-      Serial.println("\nSensor bulk POST — status: " + String(httpResponseCode));
+      Serial.println("\nSensor POST — status: " + String(httpResponseCode));
       Serial.println(response);
       Serial.println();
     } else
     {
-      Serial.println("Error on sensor bulk POST");
+      Serial.println("Error on sensor POST");
       Serial.println("Status code: " + String(httpResponseCode) + "\n");
     }
     http.end();
@@ -508,7 +573,7 @@ void sendRequests(ulong currentTime)
 {
   if (currentTime - lastPostTime >= postInterval)
   {
-    postSensorDataBulk();
+    postSensorData();
     lastPostTime = currentTime;
   }
 
